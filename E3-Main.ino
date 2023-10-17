@@ -17,8 +17,9 @@ SimpleKalmanFilter Pres(3,3,0.25);
 
 // Setup variables
 bool launched = false; 
-unsigned long MyTime;
+unsigned long CurTime;
 unsigned long TimeCheck;
+float ZgStill, ZgUpper, ZgLowwer;
 
 void setup() 
 {  
@@ -26,7 +27,8 @@ void setup()
   while (!Serial);
 
   if (!IMU.begin())
-  { Serial.println("Failed to initialize IMU!");
+  { 
+    Serial.println("Failed to initialize IMU!");
     while (1);
   }
 
@@ -77,7 +79,8 @@ void setup()
    Serial.println(" X \t Y \t Z ");
 }
 
-void loop() {
+void loop() 
+{
   float Xacel, Yacel, Zacel, Xgyro, Ygyro, Zgyro, XgyroVal, YgyroVal, ZgyroVal, XacelVal, YacelVal, ZacelVal;
   /*
   float pressure = BARO.readPressure()*10;
@@ -96,7 +99,7 @@ void loop() {
     XacelVal = XacelFilter.updateEstimate(Xacel);
     YacelVal = YacelFilter.updateEstimate(Yacel);
     ZacelVal = ZacelFilter.updateEstimate(Zacel);
-    
+    /*
     Serial.print(-3);
     Serial.print('\t');
     Serial.print(3);
@@ -113,7 +116,7 @@ void loop() {
     Serial.print('\t');
     Serial.print(ZacelVal);
     Serial.println('\t');
-    
+    */  
   }
   
   if (IMU.gyroAvailable())    // alias IMU.gyroscopeAvailable
@@ -143,37 +146,52 @@ void loop() {
 
   }
   
-  float ZgStill = ZacelVal;
-  float ZgUpper;
-  float ZgLowwer;
+
 
   if (ZacelVal > 1.1 && launched == false)
   {
     launched = true;
     Serial.println("LAUNCHED!!!");
-    MyTime = millis();
-    TimeCheck = MyTime + 2000;
+    CurTime = millis();
+    TimeCheck = CurTime + 2000;
+    ZgUpper = (ZacelVal + 1) * 1.01;
+    ZgLowwer = (ZacelVal + 1)  * 0.99;
   }
 
   if (launched)
   {
-    MyTime = millis();
-    ZgUpper = ZacelVal * 1.01;
-    ZgLowwer = ZacelVal * 0.99;
-
-    if (ZgLowwer > ZgStill || ZgStill > ZgUpper)
+    CurTime = millis();
+    if (CurTime >= TimeCheck)
     {
-      ZgStill = ZacelVal;
-      TimeCheck = MyTime + 5000;
-      Serial.println("Reset");
+        launched = false;
+        Serial.print("LANDED!!!");
+        Serial.print('\t');
+    }
+    if ((fabs((ZacelVal + 1) ) <= fabs(ZgUpper)) && (fabs((ZacelVal + 1) ) >= fabs(ZgLowwer)))
+    {
+      Serial.print("Not Moving");
+      Serial.print('\t');
     }
     else
     {
-      if (TimeCheck <= MyTime)
-      {
-        launched = false;
-        Serial.println("LANDED!!!");
-      }
+      ZgUpper = (ZacelVal + 1)  * 1.02;
+      ZgLowwer = (ZacelVal + 1)  * 0.98;
+      TimeCheck = CurTime + 2000;      
+      Serial.print("Moving");
+      Serial.print('\t');
     }
+    Serial.print(fabs(ZgLowwer));
+    Serial.print('\t');
+    Serial.print(fabs((ZacelVal + 1) ));
+    Serial.print('\t');
+    Serial.print(fabs(ZgUpper));
+    Serial.print('\t');
+    Serial.print((ZacelVal + 1)  <= ZgUpper);
+    Serial.print('\t');
+    Serial.print((ZacelVal + 1)  >= ZgLowwer);
+    Serial.print('\t');
+    Serial.print(((ZacelVal + 1)  <= ZgUpper) && ((ZacelVal + 1)  >= ZgLowwer));
+    Serial.print('\t');
+    Serial.println(" ");
   }
 }
