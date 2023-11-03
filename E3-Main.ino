@@ -1,6 +1,6 @@
-#include <Arduino_LPS22HB.h>
-#include <SPI.h>                // SPI Communication 
 #include <SD.h>                 // SD Card
+#include <Arduino_LPS22HB.h>    // Barometer
+#include <SPI.h>                // SPI Communication 
 #include <SimpleKalmanFilter.h> // Kalman Filter
 #include <Arduino_LSM9DS1.h>    // IMU
 
@@ -14,85 +14,205 @@ SdFile root;
 File myFile;
 
 // Setup for Kalman Filters
-SimpleKalmanFilter XgyroFilter(2, 2, 0.05);
-SimpleKalmanFilter YgyroFilter(.6, .6, 0.3);
-SimpleKalmanFilter ZgyroFilter(.6, .6, 0.3);
-SimpleKalmanFilter XacelFilter(.1, .1, 0.17);
-SimpleKalmanFilter YacelFilter(.1, .1, 0.17);
-SimpleKalmanFilter ZacelFilter(.1, .1, 0.17);
-SimpleKalmanFilter PresFilter(.1,.1,0.25);
+SimpleKalmanFilter XgyroFilter(2, 2, 0.05);   // X gyroscope kalman filter
+SimpleKalmanFilter YgyroFilter(.6, .6, 0.3);  // Y gyroscope kalman filter
+SimpleKalmanFilter ZgyroFilter(.6, .6, 0.3);  // Z gyroscope kalman filter
+SimpleKalmanFilter XacelFilter(.1, .1, 0.17); // X accelerometer kalman filter
+SimpleKalmanFilter YacelFilter(.1, .1, 0.17); // Y accelerometer kalman filter
+SimpleKalmanFilter ZacelFilter(.1, .1, 0.17); // Z accelerometer kalman filter
+SimpleKalmanFilter PresFilter(2,2,1);    // Pressure kalman filter
 
 
 // Setup variables
-bool launched = false; 
-unsigned long CurTime;
-unsigned long TimeCheck;
-float ZgStill, ZgUpper, ZgLowwer;
-const int chipSelect = 10;
-float Xacel, Yacel, Zacel, Xgyro, Ygyro, Zgyro, XgyroVal, YgyroVal, ZgyroVal, XacelVal, YacelVal, ZacelVal;
-
+bool launched = false;      // Variable for launch detection 
+unsigned long CurTime;      // Variable for launch detection timer
+unsigned long TimeCheck;    // Variable for launch detection timer
+const int chipSelect = 10;  // Variable for SD card chip select
+float AltitudeGround;
+float Pressure, filterPressure, Altitude, AltitudeAGL;  // Setup variables for altitude 
+float Xacel, Yacel, Zacel, XacelVal, YacelVal, ZacelVal, MagAcel; // Setup variavles for acceleration; First three are raw data and last three are filtered data
+float Xgyro, Ygyro, Zgyro, XgyroVal, YgyroVal, ZgyroVal; // Setup variavles for acceleration; First three are raw data and last three are filtered data
+float ZgUpper, ZgLowwer;    // Variables for upper and lowwer bounds for landing detection
 
 void setup() 
 {  
   Serial.begin(9600);
   while (!Serial);
 
-  //******************************************  SD  *******************************************************
+  setupSDcard();  // Setup SD card
+  setupSensors(); // Setup sensors
+}
+
+void loop() 
+{ 
+  readAltitude();             // Get pressure, filtered pressure and altitude
+  readIMU();                  // Get IMU variable values
+  launchProcedure(ZacelVal);  //  Get rocket launch status
+  if (launched){              // Check if rocket has been launched
+    writeSDcard();            // Write all data to SD card
+  }
+  Serial.println();
+}
+
+// ###############################################################################################################################################################
+
+// Function to read pressure and get altitude
+void readAltitude(){
+  Pressure = BARO.readPressure(); // Read pressure
+
+  filterPressure = PresFilter.updateEstimate(Pressure); // Get updated filtered pressure
+
+  Altitude = 145366.45*(1-pow(((filterPressure*10)/1013.25),0.190284));  // Get updated altitude
+  AltitudeAGL = Altitude - AltitudeGround;  // Get the altitude above ground
+  Serial.print(Pressure*100);
+  Serial.print('\t');
+  Serial.print(filterPressure*100);
+  Serial.print('\t');
 
 
-  Serial.print("\nInitializing SD card...");
+}
 
+// ###############################################################################################################################################################
 
-  if (!SD.begin(10)) 
+// Function to read IMU data and filter it
+void readIMU(){
+
+  if (IMU.accelAvailable())                               // Read acceleration data 
+  {  
+    IMU.readAccel(Xacel, Yacel, Zacel);                   // Save raw data from accelrometer in X, Y, Z axis
+    XacelVal = XacelFilter.updateEstimate(Xacel);         // Filter X axis data
+    YacelVal = YacelFilter.updateEstimate(Yacel);         // Filter Y axis data
+    ZacelVal = ZacelFilter.updateEstimate(Zacel);         // Filter Z axis data
+  }
+  MagAcel = sqrt(sq(XacelVal)+sq(YacelVal)+sq(ZacelVal));
+
+  if (IMU.gyroAvailable())                                // Read gyroscope data
+  {  
+    IMU.readGyro(Xgyro, Ygyro, Zgyro);                    // Save raw data from gyroscope in X, Y, Z axis 
+    XgyroVal = XgyroFilter.updateEstimate(Xgyro);         // Filter X axis data
+    YgyroVal = YgyroFilter.updateEstimate(Ygyro);         // Filter Y axis data
+    ZgyroVal = ZgyroFilter.updateEstimate(Zgyro);         // Filter Z axis data
+  }
+}
+
+// ###############################################################################################################################################################
+
+// Function for detecting launching and landing
+void launchProcedure(float ZacelVal){
+  if (ZacelVal > 3 && launched == false)  // Check for launch; If detected a large increase in Z axis force
   {
-    Serial.println("initialization failed!");
-    while (1);
+    launched = true;                        // Set launched equal to true; True means launched, False means not launched
+    Serial.println("LAUNCHED!!!");
+    CurTime = millis();                     // Get current time
+    TimeCheck = CurTime + 2000;             // Find what time is two seconds ahead
+    ZgUpper = (ZacelVal + 1) * 1.01;        // Find upper bounds of Z axis value (1% greater than current Z axis value)
+    ZgLowwer = (ZacelVal + 1)  * 0.99;      // Find lowwer bounds of Z axis value (1% less than current Z axis value)
+  }
+
+
+  if (launched)                             // Check if launched
+  {
+    CurTime = millis();                     // Get current time
+    if ((fabs((ZacelVal + 1) ) >= fabs(ZgUpper)) || (fabs((ZacelVal + 1) ) <= fabs(ZgLowwer)))  // Check if current Z axis value is outside of the bounds
+    // If true then rocket is still moving
+    {
+      ZgUpper = (ZacelVal + 1)  * 1.01;     // Find upper bounds of Z axis value (1% greater than current Z axis value)
+      ZgLowwer = (ZacelVal + 1)  * 0.99;    // Find lowwer bounds of Z axis value (1% less than current Z axis value)
+      TimeCheck = CurTime + 2000;           // Find what time is two seconds ahead
+      Serial.print("Moving");
+      Serial.print('\t');
+    }
+    else
+    {
+      Serial.print("Not Moving");
+      Serial.print('\t');
+    }
+    if (CurTime >= TimeCheck)   // Check if rocket has not moved for 2 seconds; Can assume landed if true
+    {
+        launched = false;       // Consider rocket as landed
+        myFile.close();         // Close file once landed
+        Serial.print("LANDED!!!");
+        Serial.print('\t');
+    }
+  }
+}
+
+// ###############################################################################################################################################################
+
+// Function to write to SD card
+void writeSDcard(){
+  String stringPres = String(Pressure);         // Make pressure into a string
+  String stringKPres = String(filterPressure);  // Make filtered pressure into a string
+  String stringAlt = String(Altitude);          // Make altitude into a string
+  String stringXAcel = String(XacelVal);        // Make X axis acceleration into a string
+  String stringYAcel = String(YacelVal);        // Make Y axis acceleration into a string        
+  String stringZAcel = String(ZacelVal);        // Make Z axis acceleration into a string
+  String stringXGyro = String(XgyroVal);        // Make X axis gyroscope into a string
+  String stringYGyro = String(YgyroVal);        // Make Y axis gyroscope into a string
+  String stringZGyro = String(ZgyroVal);        // Make Z axis gyroscope into a string
+
+  String dataString = String(stringPres + "," + stringKPres + "," + stringAlt + "," + stringXAcel + "," + stringYAcel + "," + stringZAcel + "," 
+  + stringXGyro + "," + stringYGyro + "," + stringZGyro + ",");
+  Serial.println(dataString);
+  myFile.println(dataString); // Write to SD card
+}
+
+// ###############################################################################################################################################################
+
+// Function to setup SD card
+void setupSDcard(){
+  if (!SD.begin(10))                          // Check if correct chip select is chosen
+  {
+    Serial.println("initialization failed!"); 
+    while (1);                                // Keep in while loop if SD chip select is wrong
   }
   Serial.println("initialization done.");
 
-  myFile = SD.open("data2.csv", FILE_WRITE);
+  myFile = SD.open("data2.csv", FILE_WRITE);  // Open a file with the given name
 
-  // if the file opened okay, write to it:
-  if (myFile) {
-    Serial.println("opened success");
-  } else {
-    // if the file didn't open, print an error:
+  if (!myFile)                                // Check if file did not open
+  {
     Serial.println("error opening data2.txt");
-    while (1);
+    while (1);                                // Keep in while loop if file not opening
   }
+}
 
-  //******************************************  IMU  *******************************************************
+// ###############################################################################################################################################################
 
-  if (!IMU.begin())
+// Fucntion to setup sensors
+void setupSensors(){
+  //******************************************  BARO  *******************************************************
+  if (!BARO.begin()) // Check if barometer is available
+  {
+    Serial.println("Failed to initialize pressure sensor!");
+    while (1);      // If barometer not availble then keep in a while loop
+  }
+  Pressure = BARO.readPressure(); // Read pressure
+  AltitudeGround = 145366.45*(1-pow(((Pressure*10)/1013.25),0.190284));  // Get altitude at ground level
+
+    //******************************************  Accelerometer  *******************************************************
+  if (!IMU.begin()) // Check if IMU is available 
   { 
     Serial.println("Failed to initialize IMU!");
-    while (1);
+    while (1);      // If sensor not available then keep in a while loop
   }
 
   
-  IMU.setAccelFS(1);
-  IMU.setAccelODR(5);
-  IMU.setAccelOffset(-0.010507, -0.015193, -0.010510);
-  IMU.setAccelSlope (0.993033, 0.999312, 1.004281);
+  IMU.setAccelFS(1);  // Set the full scale of the accelerometer
+  IMU.setAccelODR(5); // Set the data rate of the accelerometer
+
+  IMU.setAccelOffset(-0.010507, -0.015193, -0.010510);  // Calibration for accelerometer
+  IMU.setAccelSlope (0.993033, 0.999312, 1.004281);     // Calibration for accelerometer
 
   /***********************************************************************************************************************************
   *******  FS  Full Scale         range 0:±2g | 1:±24g | 2: ±4g | 3: ±8g  (default=2)                                           ******
   *******  ODR Output Data Rate   range 0:off | 1:10Hz | 2:50Hz | 3:119Hz | 4:238Hz | 5:476Hz, (default=3)(not working 6:952Hz) ******
   ************************************************************************************************************************************/
 
-  //******************************************  BARO  *******************************************************
-
-
-  if (!BARO.begin()) {
-    Serial.println("Failed to initialize pressure sensor!");
-    while (1);
-  }
-
-  // Gyroscope code
-   IMU.setGyroFS(1);
-   IMU.setGyroODR(5);
-   IMU.setGyroOffset (0.884926, 0.944702, -1.495347);
-   IMU.setGyroSlope (1.184391, 1.239955, 1.191125);
+   IMU.setGyroFS(1);  // Set the full scale of the gyroscope
+   IMU.setGyroODR(5); // Set the data rate for the gyroscope
+   IMU.setGyroOffset (0.884926, 0.944702, -1.495347); // Calibration for gyroscope
+   IMU.setGyroSlope (1.184391, 1.239955, 1.191125);   // Calibration for gyroscope
 
 /*****************************************************************************************************************************     
 *********  FS  Full Scale       setting 0: ±245°/s | 1: ±500°/s | 2: ±1000°/s | 3: ±2000°/s       ****************************
@@ -120,92 +240,4 @@ void setup()
   Serial.println(" X \t Y \t Z ");
 
   myFile.println("Pressure, Kalman Pressure, Altitude, X Accel, Y Accel, Z Accel, X Gyro, Y Gyro, Z Gyro,");
-}
-
-void loop() 
-{
-  float pressure = BARO.readPressure();  
-  Serial.print(pressure);
-  Serial.print('\t');
-
-  float kpress;
-  kpress = PresFilter.updateEstimate(pressure);
-  Serial.print(kpress);
-  Serial.print('\t');
-  
-
-  float alt = 145366.45*(1-pow(((kpress*10)/1013.25),0.190284));
-  Serial.println(alt);
-  Serial.print('\t');
-  
-
-  if (IMU.accelAvailable())                   // alias IMU.accelerationAvailable in library version 1.01
-  {  
-    IMU.readAccel(Xacel, Yacel, Zacel);                  // alias IMU.readAcceleration  in library version 1.01
-    XacelVal = XacelFilter.updateEstimate(Xacel);
-    YacelVal = YacelFilter.updateEstimate(Yacel);
-    ZacelVal = ZacelFilter.updateEstimate(Zacel);
-  }
-  Serial.print('\t');
-  
-  if (IMU.gyroAvailable())    // alias IMU.gyroscopeAvailable
-  {  
-    IMU.readGyro(Xgyro, Ygyro, Zgyro);   // alias IMU.readGyroscope
-    XgyroVal = XgyroFilter.updateEstimate(Xgyro);
-    YgyroVal = YgyroFilter.updateEstimate(Ygyro);
-    ZgyroVal = ZgyroFilter.updateEstimate(Zgyro);
-
-  }
-  
-  if (ZacelVal > 1.1 && launched == false)
-  {
-    launched = true;
-    Serial.println("LAUNCHED!!!");
-    CurTime = millis();
-    TimeCheck = CurTime + 2000;
-    ZgUpper = (ZacelVal + 1) * 1.01;
-    ZgLowwer = (ZacelVal + 1)  * 0.99;
-  }
-  Serial.print('\t');
-
-  if (launched)
-  {
-    String stringPres = String(pressure);
-    String stringKPres = String(kpress);
-    String stringAlt = String(alt);
-    String stringXAcel = String(XacelVal);
-    String stringYAcel = String(YacelVal);
-    String stringZAcel = String(ZacelVal);
-    String stringXGyro = String(XgyroVal);
-    String stringYGyro = String(YgyroVal);
-    String stringZGyro = String(ZgyroVal);
-    String dataString = String(stringPres + "," + stringKPres + "," + stringAlt + "," + stringXAcel + "," + stringYAcel + "," + stringZAcel + "," 
-    + stringXGyro + "," + stringYGyro + "," + stringZGyro + ",");
-    Serial.println(dataString);
-    myFile.println(dataString);
-    CurTime = millis();
-    if ((fabs((ZacelVal + 1) ) >= fabs(ZgUpper)) || (fabs((ZacelVal + 1) ) <= fabs(ZgLowwer)))
-    {
-
-      ZgUpper = (ZacelVal + 1)  * 1.02;
-      ZgLowwer = (ZacelVal + 1)  * 0.98;
-      TimeCheck = CurTime + 2000;      
-      Serial.print("Moving");
-      Serial.print('\t');
-    }
-    else
-    {
-      Serial.print("Not Moving");
-      Serial.print('\t');
-    }
-    if (CurTime >= TimeCheck)
-    {
-        launched = false;
-        myFile.close();
-        Serial.print("LANDED!!!");
-        Serial.print('\t');
-    }
-  }
-  Serial.println();
-  
 }
