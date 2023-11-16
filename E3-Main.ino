@@ -20,7 +20,7 @@ SimpleKalmanFilter ZgyroFilter(.6, .6, 0.3);  // Z gyroscope kalman filter
 SimpleKalmanFilter XacelFilter(.1, .1, 0.17); // X accelerometer kalman filter
 SimpleKalmanFilter YacelFilter(.1, .1, 0.17); // Y accelerometer kalman filter
 SimpleKalmanFilter ZacelFilter(.1, .1, 0.17); // Z accelerometer kalman filter
-SimpleKalmanFilter PresFilter(2,2,1);    // Pressure kalman filter
+SimpleKalmanFilter PresFilter(.02,.02,.9);    // Pressure kalman filter
 
 
 // Setup variables
@@ -33,12 +33,16 @@ float Pressure, filterPressure, Altitude, AltitudeAGL;  // Setup variables for a
 float Xacel, Yacel, Zacel, XacelVal, YacelVal, ZacelVal, MagAcel; // Setup variavles for acceleration; First three are raw data and last three are filtered data
 float Xgyro, Ygyro, Zgyro, XgyroVal, YgyroVal, ZgyroVal; // Setup variavles for acceleration; First three are raw data and last three are filtered data
 float ZgUpper, ZgLowwer;    // Variables for upper and lowwer bounds for landing detection
+int redLed = 2;
+
 
 void setup() 
 {  
   Serial.begin(9600);
-  while (!Serial);
-
+  pinMode(redLed, OUTPUT); // initialize digital pin LED_BUILTIN as an output.
+  pinMode(LED_BUILTIN, OUTPUT); // initialize digital pin LED_BUILTIN as an output.
+  digitalWrite(LED_BUILTIN, LOW);   // turn the LED off by making the voltage LOW
+  digitalWrite(redLed, LOW);   // turn the LED off by making the voltage LOW
   setupSDcard();  // Setup SD card
   setupSensors(); // Setup sensors
 }
@@ -64,9 +68,15 @@ void readAltitude(){
 
   Altitude = 145366.45*(1-pow(((filterPressure*10)/1013.25),0.190284));  // Get updated altitude
   AltitudeAGL = Altitude - AltitudeGround;  // Get the altitude above ground
+  Serial.print(Pressure);
+  Serial.print('\t');
+  Serial.print(filterPressure);
+  Serial.print('\t');
   Serial.print(Pressure*100);
   Serial.print('\t');
   Serial.print(filterPressure*100);
+  Serial.print('\t');
+  Serial.print(AltitudeAGL);
   Serial.print('\t');
 
 
@@ -99,7 +109,7 @@ void readIMU(){
 
 // Function for detecting launching and landing
 void launchProcedure(float ZacelVal){
-  if (ZacelVal > 3 && launched == false)  // Check for launch; If detected a large increase in Z axis force
+  if (ZacelVal > 1.4 && launched == false)  // Check for launch; If detected a large increase in Z axis force
   {
     launched = true;                        // Set launched equal to true; True means launched, False means not launched
     Serial.println("LAUNCHED!!!");
@@ -130,6 +140,7 @@ void launchProcedure(float ZacelVal){
     if (CurTime >= TimeCheck)   // Check if rocket has not moved for 2 seconds; Can assume landed if true
     {
         launched = false;       // Consider rocket as landed
+        myFile.println();
         myFile.close();         // Close file once landed
         Serial.print("LANDED!!!");
         Serial.print('\t');
@@ -155,6 +166,10 @@ void writeSDcard(){
   + stringXGyro + "," + stringYGyro + "," + stringZGyro + ",");
   Serial.println(dataString);
   myFile.println(dataString); // Write to SD card
+  digitalWrite(redLed, HIGH);  // turn the LED on (HIGH is the voltage level)
+  delay(5);
+  digitalWrite(redLed, LOW);  // turn the LED on (HIGH is the voltage level)
+  delay(5);
 }
 
 // ###############################################################################################################################################################
@@ -163,6 +178,7 @@ void writeSDcard(){
 void setupSDcard(){
   if (!SD.begin(10))                          // Check if correct chip select is chosen
   {
+    digitalWrite(redLed, HIGH);  // turn the LED on (HIGH is the voltage level)
     Serial.println("initialization failed!"); 
     while (1);                                // Keep in while loop if SD chip select is wrong
   }
@@ -241,3 +257,4 @@ void setupSensors(){
 
   myFile.println("Pressure, Kalman Pressure, Altitude, X Accel, Y Accel, Z Accel, X Gyro, Y Gyro, Z Gyro,");
 }
+
