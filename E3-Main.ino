@@ -24,7 +24,8 @@ SimpleKalmanFilter PresFilter(.02,.02,.9);    // Pressure kalman filter
 
 
 // Setup variables
-bool launched = false;      // Variable for launch detection 
+bool launched = false;      // Variable for launch detection
+bool falling  = false;
 unsigned long CurTime;      // Variable for launch detection timer
 unsigned long TimeCheck;    // Variable for launch detection timer
 const int chipSelect = 10;  // Variable for SD card chip select
@@ -34,6 +35,9 @@ float Xacel, Yacel, Zacel, XacelVal, YacelVal, ZacelVal, MagAcel; // Setup varia
 float Xgyro, Ygyro, Zgyro, XgyroVal, YgyroVal, ZgyroVal; // Setup variavles for acceleration; First three are raw data and last three are filtered data
 float ZgUpper, ZgLowwer;    // Variables for upper and lowwer bounds for landing detection
 int redLed = 2;
+const int buzzerPin = 7;//the buzzer pin attach to
+
+
 
 
 void setup() 
@@ -43,6 +47,7 @@ void setup()
   pinMode(LED_BUILTIN, OUTPUT); // initialize digital pin LED_BUILTIN as an output.
   digitalWrite(LED_BUILTIN, LOW);   // turn the LED off by making the voltage LOW
   digitalWrite(redLed, LOW);   // turn the LED off by making the voltage LOW
+  pinMode(buzzerPin,OUTPUT);//set buzzerPin as OUTPUT
   setupSDcard();  // Setup SD card
   setupSensors(); // Setup sensors
 }
@@ -123,7 +128,7 @@ void launchProcedure(float ZacelVal){
   if (launched)                             // Check if launched
   {
     CurTime = millis();                     // Get current time
-    if ((fabs((ZacelVal + 1) ) >= fabs(ZgUpper)) || (fabs((ZacelVal + 1) ) <= fabs(ZgLowwer)))  // Check if current Z axis value is outside of the bounds
+    if ((fabs((ZacelVal + 1) ) >= fabs(ZgUpper)) || (fabs((MagAcel + 1) ) <= fabs(ZgLowwer)))  // Check if current Z axis value is outside of the bounds
     // If true then rocket is still moving
     {
       ZgUpper = (ZacelVal + 1)  * 1.01;     // Find upper bounds of Z axis value (1% greater than current Z axis value)
@@ -131,6 +136,11 @@ void launchProcedure(float ZacelVal){
       TimeCheck = CurTime + 2000;           // Find what time is two seconds ahead
       Serial.print("Moving");
       Serial.print('\t');
+      if ((MagAcel >= 0) && (MagAcel < 0.15)) 
+      {
+        tone(buzzerPin, 300, 500);
+        falling = true;
+      }
     }
     else
     {
@@ -139,11 +149,11 @@ void launchProcedure(float ZacelVal){
     }
     if (CurTime >= TimeCheck)   // Check if rocket has not moved for 2 seconds; Can assume landed if true
     {
-        launched = false;       // Consider rocket as landed
-        myFile.println();
-        myFile.close();         // Close file once landed
-        Serial.print("LANDED!!!");
-        Serial.print('\t');
+      launched = false;       // Consider rocket as landed
+      myFile.println();
+      myFile.close();         // Close file once landed
+      Serial.print("LANDED!!!");
+      Serial.print('\t');
     }
   }
 }
@@ -161,15 +171,12 @@ void writeSDcard(){
   String stringXGyro = String(XgyroVal);        // Make X axis gyroscope into a string
   String stringYGyro = String(YgyroVal);        // Make Y axis gyroscope into a string
   String stringZGyro = String(ZgyroVal);        // Make Z axis gyroscope into a string
+  String stringMagAcel = String(MagAcel);
 
   String dataString = String(stringPres + "," + stringKPres + "," + stringAlt + "," + stringXAcel + "," + stringYAcel + "," + stringZAcel + "," 
-  + stringXGyro + "," + stringYGyro + "," + stringZGyro + ",");
+  + stringXGyro + "," + stringYGyro + "," + stringZGyro + "," + stringMagAcel + ",");
   Serial.println(dataString);
   myFile.println(dataString); // Write to SD card
-  digitalWrite(redLed, HIGH);  // turn the LED on (HIGH is the voltage level)
-  delay(5);
-  digitalWrite(redLed, LOW);  // turn the LED on (HIGH is the voltage level)
-  delay(5);
 }
 
 // ###############################################################################################################################################################
@@ -255,6 +262,6 @@ void setupSensors(){
 
   Serial.println(" X \t Y \t Z ");
 
-  myFile.println("Pressure, Kalman Pressure, Altitude, X Accel, Y Accel, Z Accel, X Gyro, Y Gyro, Z Gyro,");
+  myFile.println("Pressure, Kalman Pressure, Altitude, X Accel, Y Accel, Z Accel, X Gyro, Y Gyro, Z Gyro, Mag Acel");
 }
 
