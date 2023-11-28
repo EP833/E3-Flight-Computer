@@ -26,16 +26,20 @@ SimpleKalmanFilter PresFilter(.02,.02,.9);    // Pressure kalman filter
 // Setup variables
 bool launched = false;      // Variable for launch detection
 bool falling  = false;
+bool DrogueDeploy = false;  // Variable if drogue deployed
+bool ZeroG = false;         // Variable to chekc if we reached 0g
 unsigned long CurTime;      // Variable for launch detection timer
 unsigned long TimeCheck;    // Variable for launch detection timer
 const int chipSelect = 10;  // Variable for SD card chip select
-float AltitudeGround;
+float AltitudeGround;       // Altitude at ground level
 float Pressure, filterPressure, Altitude, AltitudeAGL;  // Setup variables for altitude 
+float AltitudeApo;
 float Xacel, Yacel, Zacel, XacelVal, YacelVal, ZacelVal, MagAcel; // Setup variavles for acceleration; First three are raw data and last three are filtered data
 float Xgyro, Ygyro, Zgyro, XgyroVal, YgyroVal, ZgyroVal; // Setup variavles for acceleration; First three are raw data and last three are filtered data
 float ZgUpper, ZgLowwer;    // Variables for upper and lowwer bounds for landing detection
-int redLed = 2;
-const int buzzerPin = 7;//the buzzer pin attach to
+const int buzzerPin = 7;    // the buzzer pin attach to
+const float DrougeAltitude = 5;   // Variable for when to set off drogue parachute
+
 
 
 
@@ -43,10 +47,6 @@ const int buzzerPin = 7;//the buzzer pin attach to
 void setup() 
 {  
   Serial.begin(9600);
-  pinMode(redLed, OUTPUT); // initialize digital pin LED_BUILTIN as an output.
-  pinMode(LED_BUILTIN, OUTPUT); // initialize digital pin LED_BUILTIN as an output.
-  digitalWrite(LED_BUILTIN, LOW);   // turn the LED off by making the voltage LOW
-  digitalWrite(redLed, LOW);   // turn the LED off by making the voltage LOW
   pinMode(buzzerPin,OUTPUT);//set buzzerPin as OUTPUT
   setupSDcard();  // Setup SD card
   setupSensors(); // Setup sensors
@@ -118,6 +118,7 @@ void launchProcedure(float ZacelVal){
   {
     launched = true;                        // Set launched equal to true; True means launched, False means not launched
     Serial.println("LAUNCHED!!!");
+    AltitudeApo = AltitudeAGL;              // Get current height as apogee height
     CurTime = millis();                     // Get current time
     TimeCheck = CurTime + 2000;             // Find what time is two seconds ahead
     ZgUpper = (ZacelVal + 1) * 1.01;        // Find upper bounds of Z axis value (1% greater than current Z axis value)
@@ -128,32 +129,38 @@ void launchProcedure(float ZacelVal){
   if (launched)                             // Check if launched
   {
     CurTime = millis();                     // Get current time
-    if ((fabs((ZacelVal + 1) ) >= fabs(ZgUpper)) || (fabs((MagAcel + 1) ) <= fabs(ZgLowwer)))  // Check if current Z axis value is outside of the bounds
+    if (AltitudeAGL > AltitudeApo)          // Check if current height is greater than apogee height
+    {
+      AltitudeApo = AltitudeAGL;            // Set current height as apogee height
+    }
+    if (MagAcel <= 0.1)
+    {
+      ZeroG = true;
+    }
+    if (ZeroG && (AltitudeAGL < AltitudeApo) && !falling)  
+    // If current height less than apogee height and the magnitude of accel is near 0 then consider the rocket passed apogee and falling
+      {
+        tone(buzzerPin, 300, 300);
+        falling = true;
+      }
+    if (falling && (DrougeAltitude > AltitudeAGL) && !DrogueDeploy)
+    // If falling and current altitude is less than the altitude requiresd to set off drogue parachte
+    {
+      tone(buzzerPin, 900, 300);
+      DrogueDeploy = true;
+    }
+    if ((fabs((ZacelVal + 1) ) >= fabs(ZgUpper)) || (fabs((ZacelVal + 1) ) <= fabs(ZgLowwer)))  // Check if current Z axis value is outside of the bounds
     // If true then rocket is still moving
     {
       ZgUpper = (ZacelVal + 1)  * 1.01;     // Find upper bounds of Z axis value (1% greater than current Z axis value)
       ZgLowwer = (ZacelVal + 1)  * 0.99;    // Find lowwer bounds of Z axis value (1% less than current Z axis value)
       TimeCheck = CurTime + 2000;           // Find what time is two seconds ahead
-      Serial.print("Moving");
-      Serial.print('\t');
-      if ((MagAcel >= 0) && (MagAcel < 0.15)) 
-      {
-        tone(buzzerPin, 300, 500);
-        falling = true;
-      }
-    }
-    else
-    {
-      Serial.print("Not Moving");
-      Serial.print('\t');
     }
     if (CurTime >= TimeCheck)   // Check if rocket has not moved for 2 seconds; Can assume landed if true
     {
       launched = false;       // Consider rocket as landed
       myFile.println();
       myFile.close();         // Close file once landed
-      Serial.print("LANDED!!!");
-      Serial.print('\t');
     }
   }
 }
@@ -164,17 +171,18 @@ void launchProcedure(float ZacelVal){
 void writeSDcard(){
   String stringPres = String(Pressure);         // Make pressure into a string
   String stringKPres = String(filterPressure);  // Make filtered pressure into a string
-  String stringAlt = String(Altitude);          // Make altitude into a string
+  String stringAlt = String(AltitudeAGL);          // Make altitude into a string
   String stringXAcel = String(XacelVal);        // Make X axis acceleration into a string
   String stringYAcel = String(YacelVal);        // Make Y axis acceleration into a string        
   String stringZAcel = String(ZacelVal);        // Make Z axis acceleration into a string
+  /*
   String stringXGyro = String(XgyroVal);        // Make X axis gyroscope into a string
   String stringYGyro = String(YgyroVal);        // Make Y axis gyroscope into a string
   String stringZGyro = String(ZgyroVal);        // Make Z axis gyroscope into a string
+  */
   String stringMagAcel = String(MagAcel);
 
-  String dataString = String(stringPres + "," + stringKPres + "," + stringAlt + "," + stringXAcel + "," + stringYAcel + "," + stringZAcel + "," 
-  + stringXGyro + "," + stringYGyro + "," + stringZGyro + "," + stringMagAcel + ",");
+  String dataString = String(stringPres + "," + stringKPres + "," + stringAlt + "," + stringXAcel + "," + stringYAcel + "," + stringZAcel + "," + stringMagAcel + ",");
   Serial.println(dataString);
   myFile.println(dataString); // Write to SD card
 }
@@ -185,7 +193,6 @@ void writeSDcard(){
 void setupSDcard(){
   if (!SD.begin(10))                          // Check if correct chip select is chosen
   {
-    digitalWrite(redLed, HIGH);  // turn the LED on (HIGH is the voltage level)
     Serial.println("initialization failed!"); 
     while (1);                                // Keep in while loop if SD chip select is wrong
   }
@@ -262,6 +269,5 @@ void setupSensors(){
 
   Serial.println(" X \t Y \t Z ");
 
-  myFile.println("Pressure, Kalman Pressure, Altitude, X Accel, Y Accel, Z Accel, X Gyro, Y Gyro, Z Gyro, Mag Acel");
+  myFile.println("Pressure, Kalman Pressure, Apogee Altitude, X Accel, Y Accel, Z Accel, Mag Acel");
 }
-
